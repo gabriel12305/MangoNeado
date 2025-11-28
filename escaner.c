@@ -36,7 +36,7 @@ int crear_cajas(EstadoSistema *estado, float area_caja, int robots_maximos);
 void acomodarEnGrilla(Caja *caja);
 void escanear(EstadoSistema *estado);
 void cleanup_estado(EstadoSistema *estado);
-int enviar_estado(int sock, EstadoSistema *estado);
+int enviar_estado(int sock, EstadoSistema *estado, &robots_maximos);
 int send_all(int sock, const void *buffer, size_t length);
 
 // -----------------------------------------------------------------------------
@@ -142,7 +142,7 @@ int main(int argc, char *argv[]) {
     // Escaneo (coloca mangos dentro de cajas y muestra posiciones)
     escanear(&estado);
 	
-	enviar_estado(client_sockfd, &estado);
+	enviar_estado(client_sockfd, &estado ,&robots_maximos);
 	
     // Enviar num_robots al cliente y esperar respuesta; repetir hasta que cliente envíe 'X' o se desconecte
     while (1) {
@@ -272,9 +272,9 @@ int calcular_min_robots_para_rango(EstadoSistema *estado, float area_caja, int N
 
     // Distancia entre ejes si se dispone de robots_maximos en la banda (convención A)
     double distancia_entre_ejes = longitud_banda / (double)robots_maximos;
-    double T_ventana = distancia_entre_ejes / velocidad_banda; // s que un robot tiene "para la caja"
+    // s que un robot tiene "para la caja"
 
-    int cap_por_robot = (int) floor(T_ventana / T_total);
+    double cap_por_robot = T_ventana / T_total;
     if (cap_por_robot <= 0) {
         // Un robot no alcanza ni 1 mango en su ventana
         return -1;
@@ -282,7 +282,7 @@ int calcular_min_robots_para_rango(EstadoSistema *estado, float area_caja, int N
 
     // Buscar mínimo M (1..robots_maximos) tal que M * cap_por_robot >= N_max
     for (int M = 1; M <= robots_maximos; M++) {
-        int capacidad_total = cap_por_robot * M;
+        double capacidad_total = cap_por_robot * M;
         // Depuración
         // printf("[DEBUG] M=%d cap_por_robot=%d cap_total=%d N_max=%d\n", M, cap_por_robot, capacidad_total, N_max);
         if (capacidad_total >= N_max) {
@@ -371,7 +371,7 @@ void cleanup_estado(EstadoSistema *estado) {
 }
 
 
-int enviar_estado(int sock, EstadoSistema *estado) {
+int enviar_estado(int sock, EstadoSistema *estado, int *robots_maximos) {
     if (!estado) return -1;
 
     float f;
@@ -392,8 +392,11 @@ int enviar_estado(int sock, EstadoSistema *estado) {
     // 4) num_cajas
     i32 = (int32_t) estado->num_cajas;
     if (send_all(sock, &i32, sizeof(i32)) < 0) return -1;
-
-    // 5) por cada caja...
+	
+	// 5) robots que hay en la banda
+	if(send(sock, robots_maximos, sizeof(int))< 0) return -1;
+	
+    // 6) por cada caja...
     for (int c = 0; c < estado->num_cajas; ++c) {
         Caja *caja = &estado->cajas[c];
 

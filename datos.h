@@ -28,6 +28,6 @@ typedef struct {
     int num_cajas;           // Número total de cajas en la simulación
     Caja *cajas;             // Arreglo dinámico de cajas
 } EstadoSistema;
-	
+
 #endif
 

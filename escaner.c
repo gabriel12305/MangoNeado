@@ -26,7 +26,7 @@
 #define SERVER_PORT 7734
 
 // Prototipos
-int calcular_min_robots_para_rango(EstadoSistema *estado, float area_caja, int N_mangos_base, int robots_maximos);
+int calcular_min_robots_para_rango(EstadoSistema *estado, float area_caja, int robots_maximos);
 int crear_cajas(EstadoSistema *estado, float area_caja, int robots_maximos);
 void acomodarEnGrilla(Caja *caja);
 void escanear(EstadoSistema *estado);
@@ -54,7 +54,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (flag_P) {
-        estado.velocidad_banda = 2.0f;   // cm/s
+        estado.velocidad_banda = 5.0f;   // cm/s
         estado.longitud_banda = 700.0f;  // cm
         area_caja = 500.0f;              // cm^2
         estado.num_cajas = 3;
@@ -135,6 +135,16 @@ int main(int argc, char *argv[]) {
 
     escanear(&estado);
 
+	// calcular número mínimo de robots necesarios según convención del proyecto
+    int nrobots = calcular_min_robots_para_rango(&estado, area_caja, robots_maximos);
+    if (nrobots < 0) {
+        // si no factible, asignamos robots_maximos (mejor intentar)
+        nrobots = robots_maximos;
+        printf("Aviso: cálculo devolvió no factible; usando robots_maximos = %d\n", robots_maximos);
+        exit(EXIT_FAILURE);
+    }
+    estado.num_robots = nrobots;
+
     // enviar estado al cliente
     if (enviar_estado(client_sockfd, &estado, robots_maximos) != 0) {
         fprintf(stderr, "Error enviando estado\n");
@@ -188,15 +198,6 @@ int crear_cajas(EstadoSistema *estado, float area_caja, int robots_maximos) {
     int num_mangos_base = (int)(area_caja / AREA_MANGO_PROM);
     if (num_mangos_base < 1) num_mangos_base = 1;
 
-    // calcular número mínimo de robots necesarios según convención del proyecto
-    int nrobots = calcular_min_robots_para_rango(estado, area_caja, num_mangos_base, robots_maximos);
-    if (nrobots < 0) {
-        // si no factible, asignamos robots_maximos (mejor intentar)
-        nrobots = robots_maximos;
-        printf("Aviso: cálculo devolvió no factible; usando robots_maximos = %d\n", robots_maximos);
-    }
-    estado->num_robots = nrobots;
-
     // reservar cajas
     estado->cajas = (Caja *) malloc(sizeof(Caja) * (size_t)estado->num_cajas);
     if (!estado->cajas) {
@@ -243,48 +244,58 @@ int crear_cajas(EstadoSistema *estado, float area_caja, int robots_maximos) {
 // - Capacidad por robot = T_ventana / T_total
 // - Buscar minimo M (1..robots_maximos) tal que M * cap_por_robot >= N_max
 // -----------------------------------------------------------------------------
-int calcular_min_robots_para_rango(EstadoSistema *estado, float area_caja, int N_mangos_base, int robots_maximos) {
-    if (!estado || robots_maximos <= 0) return -1;
-    if (area_caja <= 0.0f || N_mangos_base <= 0) return -1;
+int calcular_min_robots_para_rango(EstadoSistema *estado, float area_caja, int robots_maximos) {
+    if (!estado || estado->cajas[0].num_mangos <= 0) return -1;
 
-    // peor caso: 20% adicional
-    int N_max = (int)ceil(N_mangos_base * 1.2);
+    float lado = sqrt(estado->cajas[0].area_caja);
+    float v_brazo = lado / CONST_VEL;   // cm/s
 
-    double velocidad_banda = (double)estado->velocidad_banda;
-    double longitud_banda = (double)estado->longitud_banda;
-    double tiempo_total_banda = longitud_banda / velocidad_banda; // tiempo que tarda una caja en recorrer toda la banda
+    // tiempo que la caja pasa en el rango de un robot
+    float tiempo_ventana_total = estado->longitud_banda / estado->velocidad_banda;
+    
+    float tiempo_ventana =  tiempo_ventana_total / robots_maximos;
 
-    // lado de la caja (cuadrada)
-    double lado = sqrt((double)area_caja);
-    double distancia_diagonal = lado * sqrt(2.0);
+    // calcular tiempo REAL para etiquetar todos los mangos
+    float tiempo_total_robot = 0.0f;
+	float temporal = 0.0f;
+    // comienzo en el centro
+    float cx = 0.0f, cy = 0.0f;
+	
+	int robots_necesarios = 1;
+	
+    for (int i = 0; i < estado->cajas[0].num_mangos; i++) {
 
-    // velocidad del brazo (convencion): v_brazo = lado / CONST_VEL
-    double v_brazo = lado / CONST_VEL;
-    if (v_brazo <= 0.0) v_brazo = 1.0;
+        float mx = estado->cajas[0].mangos[i].x;
+        float my = estado->cajas[0].mangos[i].y;
 
-    // tiempo moviendo por diagonal (peor caso)
-    double T_diagonal = distancia_diagonal / v_brazo;
-    double T_total = T_diagonal + T_ETIQUETA;
+        float dx = mx - cx;
+        float dy = my - cy;
 
-    // ventana por robot si se usan robots_maximos (convención asumida)
-    double T_ventana_base = tiempo_total_banda / (double)robots_maximos;
-    if (T_total <= 0.0) return -1;
+        float dist = sqrt(dx*dx + dy*dy);
 
-    double cap_por_robot_base = T_ventana_base / T_total;
-    if (cap_por_robot_base <= 0.0) {
-        // Un robot no alcanza ni 1 mango en su ventana (seguramente no factible)
-        return -1;
+        float t_mov = dist / v_brazo;
+		
+		temporal += t_mov + T_ETIQUETA;
+		if(temporal > tiempo_ventana){
+			temporal = 0.0f;
+			cx = 0.0f;
+			cy = 0.0f;
+			robots_necesarios += 1;
+			i--;
+		}else{
+			tiempo_total_robot += t_mov + T_ETIQUETA;
+			// ahora el brazo queda en este mango
+	        cx = mx;
+	        cy = my;
+		}
+        
     }
-
-    // Buscar mínimo M
-    for (int M = 1; M <= robots_maximos; ++M) {
-        double capacidad_total = cap_por_robot_base * (double)M;
-        if (capacidad_total >= (double)N_max) {
-            return M;
-        }
-    }
-
-    return -1;
+    
+    if (robots_necesarios > robots_maximos){
+		robots_necesarios = -1;
+	}
+        
+    return robots_necesarios;
 }
 
 // -----------------------------------------------------------------------------
@@ -330,10 +341,10 @@ void escanear(EstadoSistema *estado) {
             c->mangos[j].etiquetado = 0;
         }
         acomodarEnGrilla(c);
-        printf("\nCaja #%d (Área %.2f cm², %d mangos)\n", c->id, c->area_caja, c->num_mangos);
+        printf("\nCaja #%d (Area %.2f cm², %d mangos)\n", c->id, c->area_caja, c->num_mangos);
         for (int j = 0; j < c->num_mangos; ++j) {
             Mango *m = &c->mangos[j];
-            printf(" Mango %2d | área %.1f cm² | pos (%.2f, %.2f)\n", m->id, m->area, m->x, m->y);
+            printf(" Mango %2d | area %.1f cm² | pos (%.2f, %.2f)\n", m->id, m->area, m->x, m->y);
         }
     }
     printf("\n=== ESCANEO COMPLETADO ===\n");

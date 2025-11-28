@@ -15,7 +15,7 @@ escaner: escaner.o
 	$(CC) -o $@ $^ $(LIBS)
 
 robot: robot.o
-	$(CC) -o $@ $^
+	$(CC) -o $@ $^ -lpthread $(LIBS)
 
 escaner.o: escaner.c datos.h
 	$(CC) $(CFLAGS) -c $<

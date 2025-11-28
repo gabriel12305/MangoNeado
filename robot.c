@@ -96,11 +96,11 @@ int main(){
     /* Mostrar lo recibido */
     for (int i = 0; i < estado->num_cajas; i++) {
         Caja *caja = &estado->cajas[i];
-        printf("\nCaja #%d (Área %.2f cm², %d mangos)\n", caja->id, caja->area_caja, caja->num_mangos);
+        printf("\nCaja #%d (Area %.2f cm^2, %d mangos)\n", caja->id, caja->area_caja, caja->num_mangos);
         for (int j = 0; j < caja->num_mangos; j++) {
             Mango *m = &caja->mangos[j];
-            printf(" Mango %2d | área %.1f cm² | pos (%.2f, %.2f) | etiqu: %d\n",
-                   m->id, m->area, m->x, m->y, m->etiquetado);
+            printf(" Mango %2d | area %.1f cm^2 | pos (%.2f, %.2f)\n",
+                   m->id, m->area, m->x, m->y);
         }
     }
 
@@ -147,7 +147,6 @@ int main(){
 
     /* Esperar señal del servidor (como en tu código) */
     read(sockfd, &robots_maximos, sizeof(int));
-    printf("Cliente: lectura adicional del servidor OK, valor leido: %d\n", robots_maximos);
     ch = 'X';
     write(sockfd, &ch, 1);
 
@@ -315,7 +314,7 @@ int activar_robot(RobotInfo *robotinfo) {
 /* ------------------ mover_caja (hilo) ------------------ */
 void *mover_caja(void *arg) {
     CajaEnBanda *c = (CajaEnBanda *)arg;
-    printf("Caja #%d entró a la banda (tiempo_max %.2f s)\n", c->caja->id, (double)c->tiempo_max);
+    printf("Caja #%d entro a la banda (tiempo_max %.2f s)\n", c->caja->id, (double)c->tiempo_max);
     while (1) {
         usleep((useconds_t)(DT_SECS * 1e6));
         pthread_mutex_lock(&c->lock);
@@ -327,7 +326,7 @@ void *mover_caja(void *arg) {
         if (c->tiempo >= (float)c->tiempo_max) {
             c->activa = 0;
             pthread_mutex_unlock(&c->lock);
-            printf("Caja #%d salió de la banda (tiempo >= tiempo_max)\n", c->caja->id);
+            printf("Caja #%d salio de la banda (tiempo >= tiempo_max)\n", c->caja->id);
             return NULL;
         }
         pthread_mutex_unlock(&c->lock);
@@ -365,14 +364,12 @@ void *rutina_robot(void *arg) {
     RobotInfo *r = (RobotInfo *)arg;
     if (!r) return NULL;
 
-    /* usar rand_r para hilos */
     unsigned int seed = (unsigned int)time(NULL) ^ (r->id * 1315423911u);
-
     printf("Hilo robot %d iniciado (ventana %.2f - %.2f)\n", r->id, r->t_start, r->t_end);
 
-    /* posición del brazo en la caja (comienza en centro) */
     double arm_x = 0.0;
     double arm_y = 0.0;
+    int id_caja_actual = -1;
 
     while (1) {
         pthread_mutex_lock(&r->lock);
@@ -381,36 +378,54 @@ void *rutina_robot(void *arg) {
         int es_reemp = r->es_reemplazo;
         pthread_mutex_unlock(&r->lock);
 
-        /* si fue desactivado completamente -> salir */
         if (!activo && !es_reemp) {
             printf("Robot %d: saliendo (inactivo y no reemplazo)\n", r->id);
             break;
         }
-
         if (daniado) {
-            /* esperar reparación (se maneja en manejar_falla) */
             sleep(1);
             continue;
         }
 
-        /* recorrer cajas y buscar una dentro del rango */
         int trabajo = 0;
+
         for (int ci = 0; ci < g_num_cajas; ci++) {
             CajaEnBanda *cb = &g_sistema->cajasenbanda[ci];
-            if (!is_caja_activa(cb)) continue;
+            if (!cb) continue;
 
+            /* 1) Validar existencia y actividad de la caja */
+            if (cb->caja == NULL || !is_caja_activa(cb))
+                continue;
+
+            /* 2) Tomar tiempo de la caja *antes* de bloquear (evita deadlock) */
             float t_caja = get_tiempo_caja(cb);
-            /* si la caja no está en la ventana del robot, seguir */
-            if (t_caja < r->t_start || t_caja >= r->t_end) continue;
 
-            /* tenemos una caja en rango; trabajamos en ella (solo una caja a la vez) */
-            /* buscamos el mango NO etiquetado más cercano a la posición actual del brazo */
+            /* 3) Está la caja dentro de la ventana del robot? */
+            if (t_caja < r->t_start || t_caja >= r->t_end)
+                continue;
+
+            /* 4) Si entramos a una nueva caja, reiniciar brazo (0,0) */
+            if (cb->caja->id != id_caja_actual) {
+                id_caja_actual = cb->caja->id;
+                arm_x = 0.0;
+                arm_y = 0.0;
+                //printf("Robot %d: nuevo id_caja %d -> brazo reiniciado\n", r->id, id_caja_actual);
+            }
+
+            /* 5) Buscar el mango más cercano (bajo lock de la caja) */
             int best_idx = -1;
             double best_dist = 1e9;
 
             pthread_mutex_lock(&cb->lock);
-            for (int mi = 0; mi < cb->caja->num_mangos; mi++) {
+            int n_mangos = cb->caja->num_mangos;
+            if (n_mangos <= 0) {
+                pthread_mutex_unlock(&cb->lock);
+                continue;
+            }
+
+            for (int mi = 0; mi < n_mangos; mi++) {
                 Mango *m = &cb->caja->mangos[mi];
+                if (!m) continue;
                 if (m->etiquetado) continue;
                 double d = distancia_2d(arm_x, arm_y, (double)m->x, (double)m->y);
                 if (d < best_dist) {
@@ -419,66 +434,86 @@ void *rutina_robot(void *arg) {
                 }
             }
 
-            if (best_idx >= 0) {
-                Mango *m = &cb->caja->mangos[best_idx];
-
-                /* calcular tiempos */
-                double lado = sqrt((double)cb->caja->area_caja);
-                double v_brazo = lado / CONST_VEL; /* cm/s */
-                if (v_brazo <= 0.0) v_brazo = 1.0;
-                double t_move = best_dist / v_brazo;
-                double t_total = t_move + T_ETIQUETA;
-
-                /* Antes de "mover", chequear prob de falla en este tick */
-                double p_tick = PROB_FALLO * DT_SECS;
-                double rrand = (double)rand_r(&seed) / (double)RAND_MAX;
-                if (rrand < p_tick) {
-                    pthread_mutex_unlock(&cb->lock);
-                    printf("Robot %d: fallo antes de mover al mango (simulado)\n", r->id);
-                    manejar_falla(r->id);
-                    trabajo = 1;
-                    break; /* salimos a loop principal para ver estado de falla */
-                }
-
-                /* Simular movimiento+etiquetado (bloqueante) */
+            if (best_idx < 0) {
+                /* nada por hacer en esta caja ahora */
                 pthread_mutex_unlock(&cb->lock);
-
-                /* Sleep por el tiempo de movimiento + etiqueta (simula acción) */
-                usleep((useconds_t)(t_total * 1e6));
-
-                /* Después de dormir, bloquear la caja y verificar que el mango no haya sido
-                   etiquetado por otra acción (en principio no debería, pero por seguridad) */
-                pthread_mutex_lock(&cb->lock);
-                if (!m->etiquetado) {
-                    m->etiquetado = 1;
-                    r->mangos_etiquetados += 1;
-                    /* actualizar arm position al mango etiquetado */
-                    arm_x = m->x;
-                    arm_y = m->y;
-                    printf("Robot %d: etiquetó mango %d en caja %d (pos %.2f, %.2f). Tiempo usado %.2fs\n",
-                           r->id, m->id, cb->caja->id, m->x, m->y, t_total);
-                } else {
-                    /* ya etiquetado por otra (caso raro) */
-                    arm_x = m->x;
-                    arm_y = m->y;
-                }
-                pthread_mutex_unlock(&cb->lock);
-
-                trabajo = 1;
-                /* una vez etiquetamos 1 mango, volvemos a buscar (permite fairness) */
-            } else {
-                pthread_mutex_unlock(&cb->lock);
+                continue;
             }
 
-            if (trabajo) break;
+            /* copiar datos del mango elegido */
+            //Mango temp_m = cb->caja->mangos[best_idx]; // copia segura
+            pthread_mutex_unlock(&cb->lock);
+
+            /* 6) calcular tiempos con datos copiados */
+            double lado = sqrt((double)cb->caja->area_caja);
+            double v_brazo = lado / CONST_VEL;
+            if (v_brazo <= 0.0) v_brazo = 1.0;
+            double t_move = best_dist / v_brazo;
+            double t_total = t_move + T_ETIQUETA;
+
+            /* 7) comprobar si hay TIEMPO SUFICIENTE dentro de la ventana */
+            double remaining = r->t_end - (double)t_caja; /* aproximado */
+            if (remaining < t_total) {
+                /* No hay tiempo para completar este mango dentro de la ventana */
+                /* Lo dejamos para otro robot (o para la siguiente pasada). */
+                /* Nota: no hacemos manejar_falla ni bloqueamos; seguimos buscando otros mangos/cajas */
+                continue;
+            }
+
+            /* 8) Probabilidad de fallo antes de iniciar la acción */
+            double p_tick = PROB_FALLO * DT_SECS;
+            double rrand = (double)rand_r(&seed) / (double)RAND_MAX;
+            if (rrand < p_tick) {
+                printf("Robot %d: fallo simulado antes de mover al mango (caja %d)\n",
+                       r->id, cb->caja->id);
+                manejar_falla(r->id);
+                trabajo = 1;
+                break;
+            }
+
+            /* 9) Simular movimiento+etiquetado (bloqueante) */
+            usleep((useconds_t)(t_total * 1e6));
+
+            /* 10) Re-lock y marcar si aún no está etiquetado (verificación final) */
+            pthread_mutex_lock(&cb->lock);
+            if (best_idx < cb->caja->num_mangos) {
+                Mango *mcheck = &cb->caja->mangos[best_idx];
+                if (!mcheck->etiquetado) {
+                    mcheck->etiquetado = 1;
+                    r->mangos_etiquetados++;
+                    arm_x = mcheck->x;
+                    arm_y = mcheck->y;
+                    printf("Robot %d: etiqueto mango %d en caja %d (pos %.2f, %.2f). Tiempo usado %.2fs\n",
+                           r->id, mcheck->id, cb->caja->id, mcheck->x, mcheck->y, t_total);
+                } else {
+                    /* ya etiquetado por otro robot */
+                    arm_x = mcheck->x;
+                    arm_y = mcheck->y;
+                }
+            }
+            /* detectar si con esto la caja quedó completa (opcional) */
+            int todos = 1;
+            for (int mi = 0; mi < cb->caja->num_mangos; mi++) {
+                if (!cb->caja->mangos[mi].etiquetado) { todos = 0; break; }
+            }
+            if (todos) {
+                /* opcional: marcar caja como inactiva o log */
+                // printf("Robot %d: caja %d completada\n", r->id, cb->caja->id);
+            }
+            pthread_mutex_unlock(&cb->lock);
+
+            trabajo = 1;
+            break; /* salimos del for(ci) para fairness */
         } /* fin for cajas */
 
-        /* si no trabajó en ninguna caja, dormir un tick corto */
         if (!trabajo) usleep((useconds_t)(DT_SECS * 1e6));
     } /* fin while */
 
     return NULL;
 }
+
+
+
 
 /* ------------------ falla / redundancia ------------------ */
 

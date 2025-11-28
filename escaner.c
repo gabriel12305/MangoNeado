@@ -33,6 +33,9 @@ void escanear(EstadoSistema *estado);
 void cleanup_estado(EstadoSistema *estado);
 int enviar_estado(int sock, EstadoSistema *estado, int robots_maximos);
 int send_all(int sock, const void *buffer, size_t length);
+void limpiarBuffer();
+float pedirFloat(const char *mensaje);
+int pedirInt(const char *mensaje);
 
 // -----------------------------------------------------------------------------
 // MAIN
@@ -54,22 +57,17 @@ int main(int argc, char *argv[]) {
     }
 
     if (flag_P) {
-        estado.velocidad_banda = 5.0f;   // cm/s
+        estado.velocidad_banda = 10.0f;   // cm/s
         estado.longitud_banda = 700.0f;  // cm
         area_caja = 500.0f;              // cm^2
         estado.num_cajas = 3;
         robots_maximos = 10;
     } else {
-        printf("Velocidad banda (cm/s): ");
-        if (scanf("%f", &estado.velocidad_banda) != 1) exit(EXIT_FAILURE);
-        printf("Longitud banda (cm): ");
-        if (scanf("%f", &estado.longitud_banda) != 1) exit(EXIT_FAILURE);
-        printf("Numero de cajas: ");
-        if (scanf("%d", &estado.num_cajas) != 1) exit(EXIT_FAILURE);
-        printf("Area de la caja (cm^2): ");
-        if (scanf("%f", &area_caja) != 1) exit(EXIT_FAILURE);
-        printf("Numero maximo de robots disponibles: ");
-        if (scanf("%d", &robots_maximos) != 1) exit(EXIT_FAILURE);
+        estado.velocidad_banda = pedirFloat("Velocidad banda (cm/s): ");
+		estado.longitud_banda = pedirFloat("Longitud banda (cm): ");
+		estado.num_cajas = pedirInt("Numero de cajas: ");
+		area_caja = pedirFloat("Area de la caja (cm^2): ");
+		robots_maximos = pedirInt("Numero maximo de robots disponibles: ");
     }
 
     // validar entradas
@@ -140,8 +138,8 @@ int main(int argc, char *argv[]) {
     if (nrobots < 0) {
         // si no factible, asignamos robots_maximos (mejor intentar)
         nrobots = robots_maximos;
-        printf("Aviso: cálculo devolvió no factible; usando robots_maximos = %d\n", robots_maximos);
-        exit(EXIT_FAILURE);
+        printf("Aviso: cálculo devolvió no factible para etiquetar todos los mangos; usando robots_maximos = %d\n", robots_maximos);
+        
     }
     estado.num_robots = nrobots;
 
@@ -341,10 +339,10 @@ void escanear(EstadoSistema *estado) {
             c->mangos[j].etiquetado = 0;
         }
         acomodarEnGrilla(c);
-        printf("\nCaja #%d (Area %.2f cm², %d mangos)\n", c->id, c->area_caja, c->num_mangos);
+        printf("\nCaja #%d (Area %.2f cm^2, %d mangos)\n", c->id, c->area_caja, c->num_mangos);
         for (int j = 0; j < c->num_mangos; ++j) {
             Mango *m = &c->mangos[j];
-            printf(" Mango %2d | area %.1f cm² | pos (%.2f, %.2f)\n", m->id, m->area, m->x, m->y);
+            printf(" Mango %2d | area %.1f cm^2 | pos (%.2f, %.2f)\n", m->id, m->area, m->x, m->y);
         }
     }
     printf("\n=== ESCANEO COMPLETADO ===\n");
@@ -380,6 +378,7 @@ void cleanup_estado(EstadoSistema *estado) {
 //   para cada mango: id (int32_t), x (float), y (float), area (float), etiquetado (int32_t)
 // -----------------------------------------------------------------------------
 int enviar_estado(int sock, EstadoSistema *estado, int robots_maximos) {
+	printf("Esperando velocidad_banda...\n");
     if (!estado) return -1;
     float f;
     int32_t i32;
@@ -446,5 +445,40 @@ int send_all(int sock, const void *buffer, size_t length) {
         total_sent += (size_t)sent;
     }
     return 0;
+}
+
+
+// Función para limpiar el buffer
+void limpiarBuffer() {
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF);
+}
+
+// Función genérica para pedir un float válido
+float pedirFloat(const char *mensaje) {
+    float valor;
+    while (1) {
+        printf("%s", mensaje);
+        if (scanf("%f", &valor) == 1) {
+            limpiarBuffer();
+            return valor;
+        }
+        printf("Entrada inválida. Intenta nuevamente.\n");
+        limpiarBuffer();
+    }
+}
+
+// Función genérica para pedir un entero válido
+int pedirInt(const char *mensaje) {
+    int valor;
+    while (1) {
+        printf("%s", mensaje);
+        if (scanf("%d", &valor) == 1) {
+            limpiarBuffer();
+            return valor;
+        }
+        printf("Entrada inválida. Intenta nuevamente.\n");
+        limpiarBuffer();
+    }
 }
 

@@ -44,39 +44,71 @@ int main(int argc, char *argv[]) {
     // Ignorar SIGPIPE para que write()/send() devuelvan error en vez de terminar proceso
     signal(SIGPIPE, SIG_IGN);
 
-    EstadoSistema estado = {0};
-    float area_caja = 500.0f;
-    int robots_maximos = 10;
-    int flag_P = 1; // si 1 usa parámetros por defecto, si 0 pide por stdin
+    // ------ Configuración inicial de parámetros ------
+	EstadoSistema estado = {0};
+	float area_caja;
+	int robots_maximos;
+	int flag_P = 1; // si 1 usa parámetros por defecto, si 0 pide por stdin
+	
+	srand((unsigned)time(NULL));
+	
+	// parsear -E para pedir entrada interactiva
+	for (int i = 1; i < argc; ++i) {
+	    if (strcmp(argv[i], "-E") == 0) flag_P = 0;
+	}
+	
+	int parametros_validos = 0;
+	while (!parametros_validos) {
+	    // Pedir o asignar parámetros
+	    if (flag_P) {
+	        estado.velocidad_banda = 5.0f;
+	        estado.longitud_banda = 700.0f;
+	        area_caja = 500.0f;
+	        estado.num_cajas = 3;
+	        robots_maximos = 10;
+	    } else {
+	        estado.velocidad_banda = pedirFloat("Velocidad banda (cm/s): ");
+	        estado.longitud_banda = pedirFloat("Longitud banda (cm): ");
+	        estado.num_cajas = pedirInt("Numero de cajas: ");
+	        area_caja = pedirFloat("Area de la caja (cm^2): ");
+	        robots_maximos = pedirInt("Numero maximo de robots disponibles: ");
+	    }
+	
+	    // validar entradas básicas
+	    if (estado.velocidad_banda <= 0.0f || estado.longitud_banda <= 0.0f ||
+	        estado.num_cajas <= 0 || robots_maximos <= 0) {
+	        printf("Parametros invalidos. Intenta nuevamente.\n");
+	        continue;
+	    }
+	
+	    // limpiar estado previo si existiera
+	    cleanup_estado(&estado);
+	
+	    // crear cajas
+	    if (crear_cajas(&estado, area_caja, robots_maximos) != 0) {
+	        printf("Error al crear cajas. Intenta nuevamente.\n");
+	        cleanup_estado(&estado);
+	        continue;
+	    }
+		
+	    // escanear y ubicar mangos
+	    escanear(&estado);
 
-    srand((unsigned)time(NULL));
+	    // calcular robots mínimos
+	    int nrobots = calcular_min_robots_para_rango(&estado, area_caja, robots_maximos);
+	    if (nrobots < 0) {
+	        printf("No es posible etiquetar todos los mangos con los parámetros ingresados. Intenta nuevamente.\n");
+	        cleanup_estado(&estado);
+	        continue;
+	    }
+	
+	    estado.num_robots = nrobots;
+	    parametros_validos = 1;  // todo correcto, salir del loop
+	}
 
-    // parsear -E para pedir entrada interactiva
-    for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "-E") == 0) flag_P = 0;
-    }
 
-    if (flag_P) {
-        estado.velocidad_banda = 10.0f;   // cm/s
-        estado.longitud_banda = 700.0f;  // cm
-        area_caja = 500.0f;              // cm^2
-        estado.num_cajas = 3;
-        robots_maximos = 10;
-    } else {
-        estado.velocidad_banda = pedirFloat("Velocidad banda (cm/s): ");
-		estado.longitud_banda = pedirFloat("Longitud banda (cm): ");
-		estado.num_cajas = pedirInt("Numero de cajas: ");
-		area_caja = pedirFloat("Area de la caja (cm^2): ");
-		robots_maximos = pedirInt("Numero maximo de robots disponibles: ");
-    }
-
-    // validar entradas
-    if (estado.velocidad_banda <= 0.0f || estado.longitud_banda <= 0.0f || estado.num_cajas <= 0 || robots_maximos <= 0) {
-        fprintf(stderr, "Parametros invalidos.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // Crear socket servidor
+	
+	// Crear socket servidor
     int server_sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sockfd < 0) {
         perror("socket()");
@@ -121,28 +153,7 @@ int main(int argc, char *argv[]) {
     char client_ip[INET_ADDRSTRLEN] = "desconocido";
     inet_ntop(AF_INET, &client_address.sin_addr, client_ip, sizeof(client_ip));
     printf("Cliente conectado desde %s:%d\n", client_ip, ntohs(client_address.sin_port));
-
-    // crear cajas y calcular robots necesarios
-    if (crear_cajas(&estado, area_caja, robots_maximos) != 0) {
-        fprintf(stderr, "crear_cajas fallo\n");
-        close(client_sockfd);
-        close(server_sockfd);
-        cleanup_estado(&estado);
-        exit(EXIT_FAILURE);
-    }
-
-    escanear(&estado);
-
-	// calcular número mínimo de robots necesarios según convención del proyecto
-    int nrobots = calcular_min_robots_para_rango(&estado, area_caja, robots_maximos);
-    if (nrobots < 0) {
-        // si no factible, asignamos robots_maximos (mejor intentar)
-        nrobots = robots_maximos;
-        printf("Aviso: cálculo devolvió no factible para etiquetar todos los mangos; usando robots_maximos = %d\n", robots_maximos);
-        
-    }
-    estado.num_robots = nrobots;
-
+	
     // enviar estado al cliente
     if (enviar_estado(client_sockfd, &estado, robots_maximos) != 0) {
         fprintf(stderr, "Error enviando estado\n");
@@ -170,7 +181,7 @@ int main(int argc, char *argv[]) {
         }
         printf("Mensaje recibido del cliente: %c\n", ch);
         if (ch == 'X') {
-            printf("Cliente solicitó terminar.\n");
+            printf("Cliente solicito terminar.\n");
             break;
         }
         usleep(100000);
@@ -206,10 +217,7 @@ int crear_cajas(EstadoSistema *estado, float area_caja, int robots_maximos) {
     for (int i = 0; i < estado->num_cajas; i++) {
         estado->cajas[i].id = i + 1;
         estado->cajas[i].area_caja = area_caja;
-
-        int extra = (int)ceilf(num_mangos_base * 0.2f);
-        if (extra < 1) extra = 1;
-        estado->cajas[i].num_mangos = num_mangos_base + (rand() % extra);
+        estado->cajas[i].num_mangos = num_mangos_base + rand() % (int)(num_mangos_base * 0.2 + 1);
 
         estado->cajas[i].mangos = (Mango *) malloc(sizeof(Mango) * (size_t)estado->cajas[i].num_mangos);
         if (!estado->cajas[i].mangos) {
@@ -243,6 +251,7 @@ int crear_cajas(EstadoSistema *estado, float area_caja, int robots_maximos) {
 // - Buscar minimo M (1..robots_maximos) tal que M * cap_por_robot >= N_max
 // -----------------------------------------------------------------------------
 int calcular_min_robots_para_rango(EstadoSistema *estado, float area_caja, int robots_maximos) {
+	
     if (!estado || estado->cajas[0].num_mangos <= 0) return -1;
 
     float lado = sqrt(estado->cajas[0].area_caja);
@@ -260,7 +269,7 @@ int calcular_min_robots_para_rango(EstadoSistema *estado, float area_caja, int r
     float cx = 0.0f, cy = 0.0f;
 	
 	int robots_necesarios = 1;
-	
+
     for (int i = 0; i < estado->cajas[0].num_mangos; i++) {
 
         float mx = estado->cajas[0].mangos[i].x;
@@ -279,7 +288,15 @@ int calcular_min_robots_para_rango(EstadoSistema *estado, float area_caja, int r
 			cx = 0.0f;
 			cy = 0.0f;
 			robots_necesarios += 1;
-			i--;
+			
+			mx = estado->cajas[0].mangos[i].x;
+	        my = estado->cajas[0].mangos[i].y;
+	        dx = mx - cx;
+	        dy = my - cy;
+	        dist = sqrt(dx*dx + dy*dy);
+	        t_mov = dist / v_brazo;
+	        temporal += t_mov + T_ETIQUETA;
+	        tiempo_total_robot += t_mov + T_ETIQUETA;
 		}else{
 			tiempo_total_robot += t_mov + T_ETIQUETA;
 			// ahora el brazo queda en este mango
@@ -346,6 +363,7 @@ void escanear(EstadoSistema *estado) {
         }
     }
     printf("\n=== ESCANEO COMPLETADO ===\n");
+
 }
 
 // -----------------------------------------------------------------------------
